@@ -1,75 +1,149 @@
 <template>
   <div
-    ref='jot'
+    ref="jot"
     class="jot"
-    v-bind:style="containerStyle"
+    :style="containerStyle"
+
     draggable="true"
-    v-on:dragstart="dragStart"
-    v-on:dragend="dragEnd"
-    @click="$emit('clickJot')">
-    <span class='header-container'>
-      <button class='hide-btn' v-on:click="toggleHide">-</button>
+    @dragstart="dragStart"
+    @dragend="dragEnd"
+    @click="bringJotToFront(id)">
+
+    <span class="header-container">
+      <button class="hide-btn" @click="toggleHidden">-</button>
       <input
-        v-bind:class="{ header: true, noselect: !headerEditable }"
-        type='text'
-        v-bind:readonly="!headerEditable"
-        v-bind:style="{ 'background-color': color }"
-        v-model='header'
-        v-on:keyup.enter="focusContent"
-        v-on:dblclick="enableHeaderEdit"
-        v-on:blur="disableHeaderEdit"
+        type="text"
+        ref="header"
+
+        :value="header"
+        :class="{ header: true, noselect: !headerEditable }"
+        :readonly="!headerEditable"
+        :style="{ 'background-color': color }"
+
+        @input="setThisHeader"
+        @keyup.enter="focusContent"
+        @dblclick="enableHeaderEdit"
+        @blur="disableHeaderEdit"
         />
-      <button class='delete-btn' v-on:click="deleteThis">☐</button>
+      <button class="delete-btn" @click="deleteThis">☐</button>
     </span>
-    <textarea ref='content' v-model='rawContent' v-bind:style="{ 'background-color': color }"/>
+    <textarea ref="content" :value="rawContent" @input='setThisContent' :style="{ 'background-color': color }"/>
   </div>
 </template>
 
 <script>
-const colors = [
-  "#F1F1F1",
-  "#FFEBFA",
-  "#FFF4F1",
-  "#FFFDFA",
-  "#EEFEFF"
-]
-
+import { mapMutations } from 'vuex'
 const validNumber = (n) => {
   return !isNaN(n) && n !== undefined
+}
+
+const parseReminder = (timeString) => {
+  // returns a parsed Date object from a string
+  if (timeString.startsWith('+')) {
+    const matches = timeString.match(/\+(\d+h)?(\d+m)?(\d+s)?/)
+    const [, h, m, s] = matches.map(x => parseInt(x))
+    let seconds = 0
+    seconds += validNumber(h) ? h * 3600 : 0
+    seconds += validNumber(m) ? m * 60 : 0
+    seconds += validNumber(s) ? s : 0
+    if (seconds === 0) {
+      return null;
+    }
+    let now = new Date()
+    return new Date(now.getTime() + seconds * 1000);
+  } else {
+    const [h, m, s] = timeString.split(':').map(x => parseInt(x))
+    if (!validNumber(h) || !validNumber(m) || !validNumber(s)) {
+      return null;
+    }
+
+    let reminder = new Date()
+    reminder.setHours(h, m, s)
+    return reminder
+  }
 }
 
 export default {
   name: 'Jot',
   props: {
-    id: String
+    id: String,
+    header: String,
+    rawContent: String,
+    geometry: {
+      top: Number,
+      left: Number,
+      width: Number,
+      height: Number,
+    },
+    hidden: Boolean,
+    color: String
   },
   data: function() {
     return {
-      header: `Note ${this.id}`,
       headerEditable: false,
-      color: colors[Math.floor(Math.random() * colors.length)],
-      rawContent: '', // raw text
-      containerGeom: {
-        top: 20,
-        left: 20,
-        height: 250,
-      },
       origMouseX: null,
       origMouseY: null,
-      reminder: null,
-      hidden: false,
+      timerId: null,
+      observer: null, // used for tracking resizing, initialized on mount
     }
   },
+
+  mounted() {
+    const jotContainer = this.$refs.jot
+
+    // add a mutation observer to keep track of width and height
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        // check if the mutation is attributes and update the width and height data if it is.
+        // also check if currently hidden (can't change width or height when hidden)
+        if (mutation.type !== "attributes" || this.hidden) {
+          return;
+        }
+
+        const {
+          width,
+          height
+        } = jotContainer.style;
+
+        // strip trailing 'px' and convert to int
+        const widthInt = parseInt(width.slice(0, -2))
+        const heightInt = parseInt(height.slice(0, -2))
+
+        this.$store.commit('setJotGeometry', {
+          id: this.id,
+          geometry: {
+            ...this.geometry,
+            width: widthInt,
+            height: heightInt
+          }
+        })
+      })
+    })
+
+      // observe element's specified mutations
+      observer.observe(jotContainer, { attributes: true })
+      // add the observer to data so we can disconnect it later
+      this.observer = observer
+  },
+
   methods: {
+    ...mapMutations([
+      'bringJotToFront'
+    ]),
     deleteThis: function() {
-      if (this.reminder !== null) {
-        clearTimeout(this.reminder)
-        this.$emit('cancelReminder', {id: this.id, timeoutId: this.reminder})
+      if (this.timerId !== null) {
+        clearTimeout(this.timerId)
       }
-      this.$emit('removeJot', {id: this.id})
+      this.$store.commit('removeJot', this.id)
     },
-    toggleHide: function() {
-      this.hidden = !this.hidden
+    setThisContent: function() {
+      this.$store.commit('setJotContent', { id: this.id, rawContent: this.$refs.content.value })
+    },
+    setThisHeader: function() {
+      this.$store.commit('setJotHeader', { id: this.id, header: this.$refs.header.value })
+    },
+    toggleHidden: function() {
+      this.$store.commit('setJotHidden', { id: this.id, hidden: !this.hidden })
     },
     enableHeaderEdit: function () {
       this.headerEditable = true
@@ -78,48 +152,40 @@ export default {
       this.headerEditable = false
     },
     focusContent: function() {
-      this.$refs.content.focus()
+      if (!this.hidden) {
+        this.$refs.content.focus()
+      } else {
+        this.$refs.header.blur()
+      }
     },
     dragStart: function(e) {
-      // e.stopPropagation()
       this.origMouseX = e.screenX
       this.origMouseY = e.screenY
     },
     dragEnd: function(e) {
-      // e.stopPropagation()
       const leftDiff = e.screenX - this.origMouseX
       const topDiff = e.screenY - this.origMouseY
-      this.containerGeom.top += topDiff // e.screenX
-      this.containerGeom.left += leftDiff // e.screenY
-    }
+      const geometry = {
+        ...this.geometry,
+        top: this.geometry.top + topDiff,
+        left: this.geometry.left + leftDiff,
+      }
+      this.$store.commit('setJotGeometry', { id: this.id, geometry })
+    },
+
   },
   computed: {
     containerStyle: function() {
       return {
-        top: `${this.containerGeom.top}px`,
-        left: `${this.containerGeom.left}px`,
+        top: `${this.geometry.top}px`,
+        left: `${this.geometry.left}px`,
         'background-color': this.color,
-        height: this.hidden ? '25px' : `${this.containerGeom.height}px`,
+        height: this.hidden ? '20px' : `${this.geometry.height}px`,
+        width: `${this.geometry.width}px`,
         resize: this.hidden ? 'none' : 'both'
       }
     },
-    parsedContent: function() {
-      const result = this.rawContent.split(/\r?\n/).map((line) => {
-        if (line.startsWith('/')) {
-          // parse a command
-          return {
-            type: 'meta',
-            command: 'notify',
-            content: line
-          }
-        }
-        return {
-          type: 'text',
-          content: line
-        }
-      })
-      return result
-    },
+
   },
   watch: {
     headerEditable: function() {
@@ -127,13 +193,12 @@ export default {
         return;
       }
 
-      let newReminder;
+      // done editing the header, try to parse it as a command
+      let newTimerId;
       if (this.header.startsWith('/reminder')) {
         // cancel existing reminder
-        if (this.reminder !== null) {
-          console.log('Cancelling previous timeout')
-          this.$emit('cancelReminder', {id: this.id, timeoutId: this.reminder})
-          clearTimeout(this.reminder)
+        if (this.timerId !== null) {
+          clearTimeout(this.timerId)
         }
 
         // parse the time
@@ -141,57 +206,37 @@ export default {
         if (timeString === undefined) {
           return
         }
-        let reminder;
-        if (timeString.startsWith('+')) {
-          const matches = timeString.match(/\+(\d+h)?(\d+m)?(\d+s)?/)
-          const [, h, m, s] = matches.map(x => parseInt(x))
-          let seconds = 0
-          if (validNumber(h)) {
-            seconds += h * 3600
-          }
-          if (validNumber(m)) {
-            seconds += m * 60
-          }
-          if (validNumber(s)) {
-            seconds += s
-          }
-          if (seconds === 0) {
-            return
-          }
-          reminder = new Date()
-          reminder = new Date(reminder.getTime() + seconds * 1000);
-        } else {
-          const [h, m, s] = timeString.split(':').map(x => parseInt(x))
-          if (!validNumber(h) || !validNumber(m) || !validNumber(s)) {
-            return;
-          }
 
-          reminder = new Date()
-          reminder.setHours(h, m, s)
+        const reminder = parseReminder(timeString)
+        if (reminder === null) {
+          return;
         }
 
         const now = new Date()
         const delta = Math.abs(reminder - now)
-        console.log('Setting timeout: ', delta)
         // eslint-disable-next-line
-        newReminder = setTimeout(() => {
-          this.$notification.show('Hello World', {
+        newTimerId = setTimeout(() => {
+          this.$notification.show('Jot Reminder', {
             body: this.rawContent,
           }, {
             'onclick': () => {
-              this.$emit('clickJot')
+              this.$store.commit('bringJotToFront', this.id)
             }
           })
-          this.$emit('cancelReminder', {id: this.id})
+          this.$store.commit('setJotReminder', { id: this.id, reminder: { time: null, display: null } })
         }, delta)
-        this.$emit('setReminder', {id: this.id, timeoutId: this.reminder, time: timeString})
+        this.$store.commit('setJotReminder', {id: this.id, reminder: { time: reminder, display: timeString } })
       }
       else {
-        newReminder = null
+        newTimerId = null
       }
 
-      this.reminder = newReminder
+      this.timerId = newTimerId
     }
+  },
+
+  beforeDestroy() {
+    if (this.observer) this.observer.disconnect();
   }
 }
 </script>
@@ -204,9 +249,6 @@ h3 {
 .jot {
   border: 1px solid;
   position: absolute;
-  z-index: 9;
-  width: 300px;
-  height: 250px;
   overflow: auto;
   padding: 10px;
   display: flex;
